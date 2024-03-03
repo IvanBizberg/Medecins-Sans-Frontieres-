@@ -1,0 +1,180 @@
+---
+title: "MSF"
+format: html
+---
+
+## Libraries
+```{r}
+library(tidyverse)
+library(readxl)
+library(gt)
+```
+
+
+## Import data and functions
+```{r}
+df <- read_excel("C:/Users/ivanb/OneDrive/CV/Jobs/MSF/Base_de_datos_-_Prueba_Data_Analyst_-_2024_-_UD.xlsx") %>% 
+  mutate(`Years of donate` = as.numeric(`Years of donate`))
+
+ChangPerc <- function(Origin, New) {
+  ((New - Origin)/abs(Origin))*100
+}
+```
+
+### Total amount of money
+```{r}
+sum(df$`Donation amount`, na.rm = T)
+mean(df$`Donation amount`, na.rm = T)
+df %>% count(Donante)
+```
+
+
+### ¿Cuál es el género que más dona?
+```{r}
+df %>% count(Gender) # Males donate 20% more 
+df %>% summarise(`Donation amount` = sum(`Donation amount`, na.rm = T), .by = "Gender") # Females donate on average 13.63997% more
+
+ChangPerc(2898980, 3294400)
+
+
+female_donations <- df %>% filter(Gender == "Female") %>% drop_na(`Donation amount`) %>% pull(`Donation amount`)
+male_donations <- df %>% filter(Gender == "Male") %>% drop_na(`Donation amount`) %>% pull(`Donation amount`)
+
+t_test_result <- t.test(female_donations, male_donations)
+```
+
+
+### ¿Cuánto es el promedio de donación por genero?
+
+```{r}
+df %>% summarise(`Donation amount` = mean(`Donation amount`, na.rm = T), .by = "Gender") # Females donate on average 1% more
+ChangPerc(1221.053, 1234.659)
+```
+
+
+### ¿Cuáles son las edades que más donan?
+
+```{r}
+df %>% count(Age) %>% arrange(-n) # Age that donate mor often are people aged of 35
+df %>% summarise(`Donation amount` = mean(`Donation amount`, na.rm = T), .by = "Age") %>% arrange(-`Donation amount`) # on average people of 74 year old donate more test significance
+df %>% summarise(`Donation amount` = sum(`Donation amount`, na.rm = T), .by = "Age") %>% arrange(-`Donation amount`) # on average people of 74 year old donate more test significance
+
+```
+
+
+### ¿Cuáles son las profesiones que donan por más tiempo?
+
+```{r}
+df %>% count(`Years of donate`) %>% arrange(-n) # Artist donate more often than other professions
+df %>% count(Profession) %>% arrange(-n) # Artist donate more often than other professions
+df %>% summarise(`Donation amount` = mean(`Donation amount`, na.rm = T), .by = "Profession") %>% arrange(-`Donation amount`) # on average people from Marketing donate more on average
+df %>% summarise(`Years of donate` = mean(`Years of donate`, na.rm = T), .by = "Profession") %>% arrange(-`Years of donate`) # On average Homemaker donare for the most amount od time
+
+```
+
+
+### ¿Cuál es la segmentación total que recomienda según los datos suministrados?
+We would like to maximize the donation profit—meaning the net after taking into account the costs.
+
+To do so que calculate the expected value
+
+- Assumptions: the cost of targeting people is $0.5 per person
+
+  Expected benefit of targeting = p(R | 𝐀) · v R + 1- p(R | 𝐀) · vNR
+
+  where p(R | 𝐀) is the probability of response given consumer x, vR is the value we get from a response, and vNR is the value we get from no response.
+
+- we do not know the value of the donation that any particular consumer will give until after she is targeted! Let’s modify our formulation to make this explicit:
+
+Expected benefit of targeting = p(R | 𝐀) · v R(𝐀) + 1- p(R | 𝐀) · vNR(𝐀)
+
+- we do not expect consumers to donate spontaneously without a solicitation.
+
+#### Logistic regression
+
+Looking at historical data on consumers who have been targeted, we can use regression modeling to estimate how much a consumer will respond.
+```{r}
+library(MASS)
+mdf <- df %>% mutate(Donante = if_else(Donante == "Yes", 1, 0)) %>% 
+  mutate(Age_class = cut(Age, breaks = c(0, 30, 50, 70, 100), labels = c("0-30", "31-50", "51-70", "71-100")))
+
+mdf %>% count(Age_class)
+
+m <- glm(Donante ~ Gender + Ever_Married + Age + Profession + Family_Size, data = mdf, family = "binomial")
+summary(m)
+
+m0 <- glm(Donante ~ Gender + Ever_Married + Age + Profession, data = mdf, family = "binomial")
+summary(m0)
+
+m_age <- glm(Donante ~ Gender + Ever_Married + Age_class + Profession + Family_Size, data = mdf, family = "binomial")
+summary(m_age)
+
+m0_age <- glm(Donante ~ Gender + Ever_Married + Age_class + Profession, data = mdf, family = "binomial")
+summary(m0_age)
+
+AIC(m0, m, m_age, m0_age) # I keep the model m
+
+probabilities <- predict(m, type = "response")
+
+
+mdf %>% dplyr::select(-Family_Size, -`Donation amount`, -Age) %>% distinct()
+
+prediction_df <- data.frame(Gender)
+
+```
+
+#### Data frame for expected value
+
+```{r}
+value <- mdf %>% group_by(Gender, Ever_Married, Age_class, Profession) %>% summarise(mean_donation = mean(`Donation amount`, na.rm = T))
+```
+
+
+#### Data frame to predict
+```{r}
+Gender <- mdf %>% dplyr::select(Gender) %>% distinct() %>% pull()
+Ever_Married <- mdf %>% dplyr::select(Ever_Married) %>% distinct() %>% drop_na() %>% pull() 
+Profession <- mdf %>% dplyr::select(Profession) %>% distinct() %>% drop_na() %>% pull() 
+Age_class <- mdf %>% dplyr::select(Age_class) %>% distinct() %>% drop_na() %>% pull() 
+
+df_to_predict <- expand.grid(Gender = Gender, 
+                             Ever_Married = Ever_Married,
+                             Profession = Profession,
+                             Age_class = Age_class)
+
+Prediction <- predict(m0_age, newdata = df_to_predict)
+
+prediction_df <- bind_cols(df_to_predict, Prediction) %>% arrange(-`...5`) %>% 
+  mutate(probability =  1 / (1 + exp(-`...5`))) %>% dplyr::select(-`...5`)
+
+
+Value_Probability_df <- prediction_df %>% left_join(., value, by = c("Gender", "Ever_Married", "Profession", "Age_class")) %>% 
+  mutate(Expected_value = (probability * mean_donation) + ((1-probability) * 0-1*-1)) %>% arrange(-Expected_value) %>% 
+  mutate(probability = str_glue("{round(probability*100, 0)}%")) %>% 
+  mutate(across(c(mean_donation, Expected_value), ~as.character(round(., 0)))) %>% 
+  mutate(across(c(mean_donation), ~str_glue("{mean_donation}$"))) %>% 
+  mutate(across(c(Expected_value), ~str_glue("{Expected_value}$"))) %>% 
+  rename(`Marital situation` = Ever_Married, `Age class` = Age_class, 
+         `Probability to answer donation call`= probability, `Mean average donation` = mean_donation,
+         `Expected value` = Expected_value)
+```
+```{r}
+Value_Probability_df %>% head(10) %>%  gt() %>% 
+   tab_header(title = md("**Top 10 target audience**")) %>% gtsave(., "ResultTable.png", "C:/Users/ivanb/OneDrive/CV/Jobs/MSF")
+```
+
+
+
+Cost of targeting people
+
+#### Considerations
+
+Selection Bias because the data are from past donations—from the individuals who did respond in the past.
+
+For example, some people may donate $10 each and every time they’re asked. Others may give $100 and then feel they need not donate for a while, ignoring many subsequent campaigns. The result would be that those who happened to donate in some past campaign will be biased towards those who donate less.
+
+##### Future
+
+Dealing with selection bias in this exact donation solicitation case study.
+
+(Zadrozny & Elkan, 2001; Zadrozny, 2004)
